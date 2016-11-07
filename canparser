@@ -2,7 +2,7 @@
 
 from binascii import unhexlify
 from struct import Struct
-from json import load
+from yaml import safe_load as load
 from csv import DictWriter
 
 import os
