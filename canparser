@@ -1,0 +1,150 @@
+#!/usr/bin/env python
+
+from binascii import unhexlify
+from struct import Struct
+from json import load
+from csv import DictWriter
+
+import os
+import os.path
+import sys
+import argparse
+
+
+class DataSchema(object):
+    type_map = {
+            'int8': 'b',
+            'uint8': 'B',
+            'int16': 'h',
+            'uint16': 'H',
+            'int32': 'i',
+            'uint32': 'I',
+            'float': 'f'
+        }
+
+    def __init__(self, schema):
+        self.fmt = self.type_map[schema['type']]
+        self.name = schema['name']
+        self.scale = schema.get('scale', 1)
+
+
+class MsgSchema(object):
+    order_map = {
+            'little-endian': '<',
+            'big-endian': '>'
+        }
+
+    def __init__(self, schema):
+        order = schema.get('order', 'little-endian')
+    
+        self.cob_id = schema['cob_id']
+        self.name = schema['name']
+        self.contents = [DataSchema(s) for s in schema['contents']]
+        self.format = Struct(self.order_map[order] + ''.join([d.fmt for d in self.contents]))
+
+    def parse(self, msg_body):
+        data = self.format.unpack(msg_body)
+        return [datum * scheme.scale for datum, scheme in zip(data, self.contents)]
+
+    def parse_dict(self, msg_body):
+        return {name: value for name, value in zip(self.fields, self.parse(msg_body))}
+
+    @property
+    def fields(self):
+        return [s.name for s in self.contents]
+
+
+class Schema(object):
+    def __init__(self, schema):
+        self.msgs = {int(msg['cob_id'], 16): MsgSchema(msg) for msg in schema}
+
+    def parse(self, cob_id, msg_body):
+        if cob_id not in self.msgs:
+            return
+
+        return self.msgs[cob_id].parse_dict(msg_body)
+
+    def parse_and_write(self, cob_id, msg_body):
+        d = self.parse(cob_id, msg_body)
+        if d is None:
+            return None
+
+        schema = self.msgs[cob_id]
+
+        if cob_id not in self.writers:
+            filename = os.path.join(self.output_folder, schema.name + '.csv')
+            self.writers[cob_id] = DictWriter(file(filename, 'w'), schema.fields)
+            self.writers[cob_id].writeheader()
+
+        writer = self.writers[cob_id]
+        writer.writerow(d)
+        return d
+
+
+class CANParser(object):
+    def __init__(self, schema):
+        self.schema = schema
+        self.writers = {}
+        self.output_folder = '.'
+
+    def parse_line(self, line):
+        timestamp, _interface, msg = line.split()
+        cob_id, body = msg.split('#')
+        cob_id = int(cob_id, 16)
+        body = unhexlify(body)
+
+        data = self.schema.parse(cob_id, body)
+        if data is not None:
+            self.write(cob_id, data)
+
+    def write(self, cob_id, data):
+        if cob_id not in self.writers:
+            msg_schema = self.schema.msgs[cob_id]
+            filename = os.path.join(self.output_folder, msg_schema.name + '.csv')
+            self.writers[cob_id] = DictWriter(file(filename, 'w'), msg_schema.fields)
+            self.writers[cob_id].writeheader()
+
+        writer = self.writers[cob_id]
+        writer.writerow(data)
+
+        #if data is not None:
+        #    print(data)
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-s', '--schema', default='schema.yaml', help='schema file for the can dump')
+    parser.add_argument('input_file', help='can dump to process')
+    parser.add_argument('-o', '--output-folder', default=argparse.SUPPRESS,
+                        help='name of folder to write CSV files to, by default this is the name of the input file with '
+                             'no extension')
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    if hasattr(args, 'output_folder'):
+        output_folder = args.output_folder
+    else:
+        output_folder = os.path.splitext(os.path.basename(args.input_file))[0]
+
+    with file(args.schema) as s:
+        schema = Schema(load(s))
+
+    if os.path.exists(output_folder):
+        if not os.path.isdir(output_folder):
+            sys.stderr.write('"%s" alread exist and is not a folder')
+            sys.exit(1)
+    else:
+        os.makedirs(output_folder)
+
+    writer = CANParser(schema)
+    writer.output_folder = os.path.join('.', output_folder)
+
+    with file(args.input_file) as candump:
+        for line in candump:
+            writer.parse_line(line)
+
+
+if __name__ == '__main__':
+    main()
