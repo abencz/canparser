@@ -4,6 +4,7 @@ from binascii import unhexlify
 from struct import Struct
 from yaml import safe_load as load
 from csv import DictWriter
+from collections import namedtuple
 
 import os
 import os.path
@@ -42,43 +43,54 @@ class MsgSchema(object):
         self.contents = [DataSchema(s) for s in schema['contents']]
         self.format = Struct(self.order_map[order] + ''.join([d.fmt for d in self.contents]))
 
-    def parse(self, msg_body):
-        data = self.format.unpack(msg_body)
-        return [datum * scheme.scale for datum, scheme in zip(data, self.contents)]
+    def parse(self, msg):
+        data = self.format.unpack(msg.body)
+        return [msg.timestamp] + [datum * scheme.scale for datum, scheme in zip(data, self.contents)]
 
-    def parse_dict(self, msg_body):
-        return {name: value for name, value in zip(self.fields, self.parse(msg_body))}
+    def parse_dict(self, msg):
+        return {name: value for name, value in zip(self.fields, self.parse(msg))}
 
     @property
     def fields(self):
-        return [s.name for s in self.contents]
+        return ['Time'] + [s.name for s in self.contents]
 
 
 class Schema(object):
     def __init__(self, schema):
         self.msgs = {int(msg['cob_id'], 16): MsgSchema(msg) for msg in schema}
 
-    def parse(self, cob_id, msg_body):
-        if cob_id not in self.msgs:
+    def parse(self, msg):
+        if msg.cob_id not in self.msgs:
             return
 
-        return self.msgs[cob_id].parse_dict(msg_body)
+        return self.msgs[msg.cob_id].parse_dict(msg)
 
-    def parse_and_write(self, cob_id, msg_body):
-        d = self.parse(cob_id, msg_body)
+    def parse_and_write(self, msg):
+        d = self.parse(msg)
         if d is None:
             return None
 
-        schema = self.msgs[cob_id]
+        schema = self.msgs[msg.cob_id]
 
-        if cob_id not in self.writers:
+        if msg.cob_id not in self.writers:
             filename = os.path.join(self.output_folder, schema.name + '.csv')
-            self.writers[cob_id] = DictWriter(file(filename, 'w'), schema.fields)
-            self.writers[cob_id].writeheader()
+            self.writers[msg.cob_id] = DictWriter(file(filename, 'w'), schema.fields)
+            self.writers[msg.cob_id].writeheader()
 
-        writer = self.writers[cob_id]
+        writer = self.writers[msg.cob_id]
         writer.writerow(d)
         return d
+
+
+class CANMessage(namedtuple('CANMessage', 'timestamp cob_id body')):
+    @classmethod
+    def from_line(cls, line):
+        timestamp, _interface, msg = line.split()
+        timestamp = timestamp.strip('()')
+        cob_id, body = msg.split('#')
+        cob_id = int(cob_id, 16)
+        body = unhexlify(body)
+        return cls(timestamp, cob_id, body)
 
 
 class CANParser(object):
@@ -88,14 +100,15 @@ class CANParser(object):
         self.output_folder = '.'
 
     def parse_line(self, line):
-        timestamp, _interface, msg = line.split()
-        cob_id, body = msg.split('#')
-        cob_id = int(cob_id, 16)
-        body = unhexlify(body)
+        try:
+            msg = CANMessage.from_line(line)
+        except ValueError:
+            # line could not be parsed
+            return
 
-        data = self.schema.parse(cob_id, body)
+        data = self.schema.parse(msg)
         if data is not None:
-            self.write(cob_id, data)
+            self.write(msg.cob_id, data)
 
     def write(self, cob_id, data):
         if cob_id not in self.writers:
