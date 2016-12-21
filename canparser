@@ -74,7 +74,7 @@ class Schema(object):
 
         if msg.cob_id not in self.writers:
             filename = os.path.join(self.output_folder, schema.name + '.csv')
-            self.writers[msg.cob_id] = DictWriter(file(filename, 'w'), schema.fields)
+            self.writers[msg.cob_id] = DictWriter(open(filename, 'w'), schema.fields)
             self.writers[msg.cob_id].writeheader()
 
         writer = self.writers[msg.cob_id]
@@ -114,7 +114,7 @@ class CANParser(object):
         if cob_id not in self.writers:
             msg_schema = self.schema.msgs[cob_id]
             filename = os.path.join(self.output_folder, msg_schema.name + '.csv')
-            self.writers[cob_id] = DictWriter(file(filename, 'w'), msg_schema.fields)
+            self.writers[cob_id] = DictWriter(open(filename, 'w'), msg_schema.fields)
             self.writers[cob_id].writeheader()
 
         writer = self.writers[cob_id]
@@ -141,7 +141,7 @@ def main():
     else:
         output_folder = os.path.splitext(os.path.basename(args.input_file))[0]
 
-    with file(args.schema) as s:
+    with open(args.schema) as s:
         schema = Schema(load(s))
 
     if os.path.exists(output_folder):
@@ -154,7 +154,7 @@ def main():
     writer = CANParser(schema)
     writer.output_folder = os.path.join('.', output_folder)
 
-    with file(args.input_file) as candump:
+    with open(args.input_file) as candump:
         for line in candump:
             writer.parse_line(line)
 
