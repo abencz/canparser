@@ -40,15 +40,22 @@ class MsgSchema(object):
     
         self.cob_id = schema['cob_id']
         self.name = schema['name']
+        self.interface = schema.get('interface', None)
         self.contents = [DataSchema(s) for s in schema['contents']]
         self.format = Struct(self.order_map[order] + ''.join([d.fmt for d in self.contents]))
 
     def parse(self, msg):
+        if self.interface is not None and msg.interface != self.interface:
+            return None
+
         data = self.format.unpack(msg.body)
         return [msg.timestamp] + [datum * scheme.scale for datum, scheme in zip(data, self.contents)]
 
     def parse_dict(self, msg):
-        return {name: value for name, value in zip(self.fields, self.parse(msg))}
+        if self.interface is not None and msg.interface != self.interface:
+            return None
+        else:
+            return {name: value for name, value in zip(self.fields, self.parse(msg))}
 
     @property
     def fields(self):
@@ -82,15 +89,15 @@ class Schema(object):
         return d
 
 
-class CANMessage(namedtuple('CANMessage', 'timestamp cob_id body')):
+class CANMessage(namedtuple('CANMessage', 'timestamp interface cob_id body')):
     @classmethod
     def from_line(cls, line):
-        timestamp, _interface, msg = line.split()
+        timestamp, interface, msg = line.split()
         timestamp = timestamp.strip('()')
         cob_id, body = msg.split('#')
         cob_id = int(cob_id, 16)
         body = unhexlify(body)
-        return cls(timestamp, cob_id, body)
+        return cls(timestamp, interface, cob_id, body)
 
 
 class CANParser(object):
@@ -155,8 +162,12 @@ def main():
     writer.output_folder = os.path.join('.', output_folder)
 
     with open(args.input_file) as candump:
-        for line in candump:
-            writer.parse_line(line)
+        for line_number, line in enumerate(candump):
+            try:
+                writer.parse_line(line)
+            except Exception as e:
+                sys.stderr.write('Failed to parse input file line %d: %s\n' % (line_number + 1, str(e)))
+                sys.exit(1)
 
 
 if __name__ == '__main__':
